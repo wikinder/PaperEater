@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PaperEater - 最新のAI論文</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+    }
+    #header {
+      background: #161b22;
+      padding: 20px;
+      text-align: center;
+      font-size: 24px;
+    }
+    #status {
+      text-align: center;
+      padding: 30px;
+      font-size: 18px;
+      color: #f0f6fc;
+    }
+    #list {
+      padding: 20px;
+      max-width: 1200px;
+      margin: auto;
+    }
+
+    .paper {
+      background: #161b22;
+      margin: 20px 0;
+      padding: 20px;
+      border-radius: 12px;
+      border: 1px solid #30363d;
+    }
+
+    .title {
+      margin-bottom: 10px;
+    }
+    .title-en {
+      font-size: 20px;
+      font-weight: bold;
+      color: #58a6ff;
+      margin-bottom: 4px;
+    }
+    .title-ja {
+      font-size: 14px;
+      color: #c9d1d9;
+      opacity: 0.95;
+    }
+
+    .authors {
+      color: #8b949e;
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+    .meta {
+      color: #8b949e;
+      font-size: 13px;
+      margin-bottom: 15px;
+    }
+
+    .btn {
+      background: #238636;
+      padding: 8px 16px;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+    .btn:hover {
+      background: #2ea043;
+    }
+
+    /* ダウンロード進捗モーダル */
+    #progress-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    #progress-box {
+      background: #161b22;
+      padding: 24px 20px 18px;
+      border-radius: 12px;
+      border: 1px solid #30363d;
+      width: 280px;
+      text-align: center;
+    }
+    #progress-text {
+      color: #c9d1d9;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    #progress-bar-wrap {
+      width: 100%;
+      height: 10px;
+      background: #30363d;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      width: 0%;
+      height: 100%;
+      background: #238636;
+      transition: width 0.08s linear;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="header">PaperEater - 最新のAI論文</div>
+  <div id="status">arXivから最新のAI論文を取得中...</div>
+  <div id="list"></div>
+
+  <!-- PDFダウンロード進捗 -->
+  <div id="progress-modal">
+    <div id="progress-box">
+      <div id="progress-text">PDF をダウンロード中… 0%</div>
+      <div id="progress-bar-wrap">
+        <div id="progress-bar"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { fetch } from "@tauri-apps/plugin-http";
+    import { openUrl } from "@tauri-apps/plugin-opener";
+
+    const STATUS = document.getElementById("status");
+    const LIST = document.getElementById("list");
+
+    // ==========================================
+    //  絞り込みキーワード（プリセットB）
+    //  AI / AGI / ASI / LLM + OpenAI / ChatGPT /
+    //  Claude / Gemini / Mistral / LLaMA / Sora など
+    // ==========================================
+    const KEYWORD_PATTERNS = [
+      /\bai\b/i,
+      /\bartificial intelligence\b/i,
+      /\bagi\b/i,
+      /\basi\b/i,
+      /\bgeneral intelligence\b/i,
+      /\bsuperintelligence\b/i,
+      /\blarge language model\b/i,
+      /\bllm\b/i,
+
+      /\bopenai\b/i,
+      /\bgpt\b/i,
+      /\bchatgpt\b/i,
+      /\bo1\b/i,
+
+      /\banthropic\b/i,
+      /\bclaude\b/i,
+      /\bdeepmind\b/i,
+      /\bgemini\b/i,
+      /\bmistral\b/i,
+      /\bllama\b/i,
+      /\bmeta\b/i,
+      /\bcohere\b/i,
+      /\bx-ai\b/i,
+      /\bgrok\b/i,
+
+      /\bsora\b/i,
+      /\bdiffusion\b/i,
+      /\btext-to-video\b/i,
+      /\btext to video\b/i,
+      /\btext-to-image\b/i,
+      /\btext to image\b/i,
+      /\bvision-language\b/i,
+      /\bvlm\b/i,
+      /\bmultimodal\b/i,
+      /\brag\b/i,
+      /\bretrieval-augmented\b/i,
+      /\balignment\b/i
+    ];
+
+    function isInterestingPaper(paper) {
+      const text =
+        (paper.title || "") +
+        " " +
+        (paper.authors || "") +
+        " " +
+        (paper.submitted || "");
+      return KEYWORD_PATTERNS.some((re) => re.test(text));
+    }
+
+    // ★ DeepL API キー（任意）
+    // ここにキーを入れればタイトル日本語訳が出る
+    const DEEPL_API_KEY = "";
+
+    // 進捗UI
+    const PROGRESS_MODAL = document.getElementById("progress-modal");
+    const PROGRESS_TEXT = document.getElementById("progress-text");
+    const PROGRESS_BAR = document.getElementById("progress-bar");
+
+    function showProgress(percent) {
+      const p = Math.max(0, Math.min(100, Math.floor(percent)));
+      PROGRESS_MODAL.style.display = "flex";
+      PROGRESS_BAR.style.width = p + "%";
+      PROGRESS_TEXT.textContent = `PDF をダウンロード中… ${p}%`;
+    }
+
+    function hideProgress() {
+      PROGRESS_BAR.style.width = "0%";
+      PROGRESS_TEXT.textContent = "PDF をダウンロード中… 0%";
+      PROGRESS_MODAL.style.display = "none";
+    }
+
+    // ================================
+    //   /list/cs/recent?skip=0&show=2000
+    //   内の "すべての <dl>" から dt/dd を集める
+    // ================================
+    async function loadRecent2000() {
+      STATUS.textContent = "arXivから最新のAI論文を取得中...";
+
+      const url = "https://arxiv.org/list/cs/recent?skip=0&show=2000";
+
+      try {
+        const response = await fetch(url);
+        const html = await response.text();
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, "text/html");
+
+        const dlNodes = Array.from(doc.querySelectorAll("dl"));
+        if (dlNodes.length === 0) {
+          STATUS.textContent =
+            "論文一覧が見つからなかった（HTML構造が変わったかも）";
+          return;
+        }
+
+        const papers = [];
+
+        // 各 dl ごとに dt/dd をペアで読む
+        for (const dl of dlNodes) {
+          const dts = dl.querySelectorAll("dt");
+          const dds = dl.querySelectorAll("dd");
+          const len = Math.min(dts.length, dds.length);
+
+          for (let i = 0; i < len; i++) {
+            const dt = dts[i];
+            const dd = dds[i];
+            if (!dt || !dd) continue;
+
+            const absLink = dt.querySelector('a[title="Abstract"]');
+            if (!absLink) continue;
+
+            const absPath = absLink.getAttribute("href") || "";
+            const absUrl = "https://arxiv.org" + absPath;
+            const pdfUrl = absUrl.replace("/abs/", "/pdf/") + ".pdf";
+
+            const titleEl = dd.querySelector(".list-title");
+            const authorsEl = dd.querySelector(".list-authors");
+            const submittedEl = dd.querySelector(".list-submitted");
+
+            const title = titleEl
+              ? titleEl.textContent.replace("Title:", "").trim()
+              : "(no title)";
+            const authors = authorsEl
+              ? authorsEl.textContent.replace("Authors:", "").trim()
+              : "";
+            const submitted = submittedEl ? submittedEl.textContent.trim() : "";
+
+            papers.push({
+              title,
+              authors,
+              submitted,
+              absUrl,
+              pdfUrl,
+            });
+          }
+        }
+
+        // ★ ここで AI / AGI / LLM / OpenAI / 流行ワードで絞り込み
+        const filtered = papers.filter(isInterestingPaper);
+
+        STATUS.textContent = ` ${filtered.length} 件の論文が見つかりました`;
+        render(filtered);
+        translateAllTitles().catch((e) =>
+          console.error("translateAllTitles error", e)
+        );
+      } catch (e) {
+        console.error(e);
+        STATUS.textContent = "取得失敗: " + String(e);
+      }
+    }
+
+    // ================================
+    //   一覧表示（タイトルは日英2行）
+    // ================================
+    function render(papers) {
+      if (!papers || papers.length === 0) {
+        LIST.innerHTML = "<p>条件に合う論文が見つからなかった…</p>";
+        return;
+      }
+
+      LIST.innerHTML = papers
+        .map(
+          (p) => `
+        <div class="paper">
+          <div class="title">
+            <div class="title-en">${p.title}</div>
+            <div class="title-ja"></div>
+          </div>
+          <div class="authors">${p.authors}</div>
+          <div class="meta">${p.submitted}</div>
+          <button class="btn" onclick="openPdfExternal('${p.pdfUrl}')">
+            PDFをブラウザで開く
+          </button>
+          <button class="btn" onclick="downloadPDF('${p.pdfUrl}', '${p.title
+            .replace(/'/g, "\\'")
+            .replace(/\r?\n/g, " ")}')">
+            PDFを保存
+          </button>
+        </div>
+      `
+        )
+        .join("");
+    }
+
+    // ================================
+    //   タイトル一括翻訳（DeepL）
+    // ================================
+    async function translateAllTitles() {
+      if (!DEEPL_API_KEY) {
+        console.log("DEEPL_API_KEY 未設定なので翻訳はスキップ");
+        return;
+      }
+
+      const elements = Array.from(
+        document.querySelectorAll(".title-ja")
+      );
+
+      for (const el of elements) {
+        const enEl = el.previousElementSibling;
+        if (!enEl) continue;
+
+        const enText = (enEl.textContent || "").trim();
+        if (!enText) continue;
+
+        el.textContent = "日本語に翻訳中…";
+
+        try {
+          const ja = await translateTitleToJa(enText);
+          if (ja) {
+            el.textContent = ja;
+          } else {
+            el.textContent = "";
+          }
+        } catch (e) {
+          console.error("translate error", e);
+          el.textContent = "";
+        }
+      }
+    }
+
+    async function translateTitleToJa(text) {
+      const endpoint = "https://api-free.deepl.com/v2/translate";
+
+      const body = new URLSearchParams({
+        auth_key: DEEPL_API_KEY,
+        text,
+        target_lang: "JA",
+      }).toString();
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+      });
+
+      if (!res.ok) {
+        throw new Error("DeepL HTTP error: " + res.status);
+      }
+
+      const data = await res.json();
+      const t =
+        data &&
+        data.translations &&
+        data.translations[0] &&
+        data.translations[0].text;
+      return t || "";
+    }
+
+    // ================================
+    //   PDFダウンロード（進捗付き）
+    // ================================
+    async function downloadPDF(pdfUrl, title) {
+      try {
+        showProgress(0);
+
+        const res = await fetch(pdfUrl, { method: "GET" });
+
+        const totalHeader = res.headers.get("content-length");
+        const total = totalHeader ? parseInt(totalHeader, 10) : 0;
+
+        const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+
+        if (!reader) {
+          const blob = await res.blob();
+          const clean = title.replace(/[^a-zA-Z0-9\-_\.]/g, "_");
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = clean + ".pdf";
+          a.click();
+          showProgress(100);
+          setTimeout(hideProgress, 600);
+          return;
+        }
+
+        let received = 0;
+        const chunks = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length || value.byteLength || 0;
+
+            if (total > 0) {
+              showProgress((received / total) * 100);
+            } else {
+              const current = parseFloat(PROGRESS_BAR.style.width || "0");
+              const next = Math.min(current + 2, 95);
+              showProgress(next);
+            }
+          }
+        }
+
+        showProgress(100);
+
+        const merged = mergeChunks(chunks);
+        const blob = new Blob([merged], { type: "application/pdf" });
+
+        const clean = title.replace(/[^a-zA-Z0-9\-_\.]/g, "_");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = clean + ".pdf";
+        a.click();
+      } catch (e) {
+        console.error(e);
+        alert("PDFのダウンロードに失敗した…");
+      } finally {
+        setTimeout(hideProgress, 600);
+      }
+    }
+
+    function mergeChunks(chunks) {
+      let totalLength = 0;
+      for (const c of chunks) {
+        totalLength += c.length || c.byteLength || 0;
+      }
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const c of chunks) {
+        const arr = c instanceof Uint8Array ? c : new Uint8Array(c);
+        merged.set(arr, offset);
+        offset += arr.length;
+      }
+      return merged;
+    }
+
+    // グローバルに公開（onclick から呼ぶ用）
+    window.downloadPDF = downloadPDF;
+
+    async function openPdfExternal(url) {
+      try {
+        await openUrl(url);
+      } catch (e) {
+        console.error(e);
+        alert("外部ブラウザで開けなかった…");
+      }
+    }
+
+    window.openPdfExternal = openPdfExternal;
+
+    // 起動時に取得
+    loadRecent2000();
+  </script>
+</body>
+</html>
